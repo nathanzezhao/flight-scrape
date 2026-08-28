@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Flight Fare Comparison</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.4rem; }
+  form { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: end; margin-bottom: 1.5rem; }
+  label { display: flex; flex-direction: column; font-size: 0.8rem; gap: 0.25rem; }
+  input, select, button { font-size: 1rem; padding: 0.4rem 0.5rem; }
+  button { cursor: pointer; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #8883; }
+  #status { margin: 1rem 0; opacity: 0.8; }
+  .cheapest { font-weight: bold; }
+  h2 { font-size: 1.15rem; margin-top: 2.5rem; }
+  .tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+  .tab-btn { padding: 0.4rem 0.8rem; cursor: pointer; border: 1px solid #8886; background: transparent; border-radius: 0.3rem; }
+  .tab-btn[aria-selected="true"] { font-weight: bold; border-color: currentColor; }
+  .trend-status { margin: 0.75rem 0; opacity: 0.8; font-size: 0.9rem; }
+  /* Chart.js's `responsive: true` needs a parent with a fixed, non-canvas-
+     derived height, or the canvas and its container can grow in a feedback
+     loop (a well-known Chart.js gotcha) — this wrapper is that fixed height. */
+  .chart-wrap { position: relative; height: 400px; max-width: 100%; }
+  .chart-wrap canvas { max-width: 100%; }
+</style>
+</head>
+<body>
+  <h1>Flight Fare Comparison</h1>
+  <form id="search-form">
+    <label>Origin
+      <select name="origin" required>
+        <option value="YVR" selected>YVR &ndash; Vancouver</option>
+        <option value="YYZ">YYZ &ndash; Toronto</option>
+        <option value="YYC">YYC &ndash; Calgary</option>
+        <option value="YUL">YUL &ndash; Montreal</option>
+        <option value="YHZ">YHZ &ndash; Halifax</option>
+      </select>
+    </label>
+    <label>Destination
+      <select name="destination" required>
+        <option value="PVG" selected>PVG &ndash; Shanghai Pudong</option>
+        <option value="PEK">PEK &ndash; Beijing Capital</option>
+        <option value="CAN">CAN &ndash; Guangzhou</option>
+        <option value="XMN">XMN &ndash; Xiamen</option>
+        <option value="CTU">CTU &ndash; Chengdu</option>
+        <option value="ICN">ICN &ndash; Seoul Incheon</option>
+        <option value="HKG">HKG &ndash; Hong Kong</option>
+        <option value="TPE">TPE &ndash; Taipei Taoyuan</option>
+        <option value="NRT">NRT &ndash; Tokyo Narita</option>
+        <option value="HAN">HAN &ndash; Hanoi</option>
+      </select>
+    </label>
+    <label>Depart date <input name="depart_date" type="date" required></label>
+    <button type="submit">Compare</button>
+  </form>
+  <div id="status"></div>
+  <table id="results" hidden>
+    <thead>
+      <tr><th>Airline</th><th>Price</th><th>Depart</th><th>Arrive</th><th>Duration</th><th>Stops</th><th>Scraped</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <h2>Price Trends</h2>
+  <div class="tabs" role="tablist">
+    <button type="button" class="tab-btn" id="tab-btn-bydate" role="tab" aria-selected="true">By departure date</button>
+    <button type="button" class="tab-btn" id="tab-btn-history" role="tab" aria-selected="false">By scrape date (price history)</button>
+  </div>
+
+  <section id="panel-bydate" class="trend-panel">
+    <p style="opacity:0.75; font-size:0.9rem;">Compare which day is cheapest to fly. Any date in the range with no data yet gets scraped live, one date at a time (real Chrome window, up to ~60s each) &mdash; ranges over 14 days aren't allowed in one go, since that's a lot of sequential scraping.</p>
+    <form id="bydate-form">
+      <label>Origin
+        <select name="origin" required>
+          <option value="YVR" selected>YVR &ndash; Vancouver</option>
+          <option value="YYZ">YYZ &ndash; Toronto</option>
+          <option value="YYC">YYC &ndash; Calgary</option>
+          <option value="YUL">YUL &ndash; Montreal</option>
+          <option value="YHZ">YHZ &ndash; Halifax</option>
+        </select>
+      </label>
+      <label>Destination
+        <select name="destination" required>
+          <option value="PVG" selected>PVG &ndash; Shanghai Pudong</option>
+          <option value="PEK">PEK &ndash; Beijing Capital</option>
+          <option value="CAN">CAN &ndash; Guangzhou</option>
+          <option value="XMN">XMN &ndash; Xiamen</option>
+          <option value="CTU">CTU &ndash; Chengdu</option>
+          <option value="ICN">ICN &ndash; Seoul Incheon</option>
+          <option value="HKG">HKG &ndash; Hong Kong</option>
+          <option value="TPE">TPE &ndash; Taipei Taoyuan</option>
+          <option value="NRT">NRT &ndash; Tokyo Narita</option>
+          <option value="HAN">HAN &ndash; Hanoi</option>
+        </select>
+      </label>
+      <label>Start date <input name="start_date" type="date" required></label>
+      <label>End date <input name="end_date" type="date" required></label>
+      <button type="submit">Show trend</button>
+    </form>
+    <div id="bydate-status" class="trend-status"></div>
+    <div id="bydate-airline-picker"></div>
+    <div class="chart-wrap"><canvas id="bydate-canvas" hidden></canvas></div>
+  </section>
+
+  <section id="panel-history" class="trend-panel" hidden>
+    <p style="opacity:0.75; font-size:0.9rem;">Track how one specific flight's price has moved as it's been re-scraped over time &mdash; is it worth booking now or waiting?</p>
+    <form id="history-form">
+      <label>Origin
+        <select name="origin" required>
+          <option value="YVR" selected>YVR &ndash; Vancouver</option>
+          <option value="YYZ">YYZ &ndash; Toronto</option>
+          <option value="YYC">YYC &ndash; Calgary</option>
+          <option value="YUL">YUL &ndash; Montreal</option>
+          <option value="YHZ">YHZ &ndash; Halifax</option>
+        </select>
+      </label>
+      <label>Destination
+        <select name="destination" required>
+          <option value="PVG" selected>PVG &ndash; Shanghai Pudong</option>
+          <option value="PEK">PEK &ndash; Beijing Capital</option>
+          <option value="CAN">CAN &ndash; Guangzhou</option>
+          <option value="XMN">XMN &ndash; Xiamen</option>
+          <option value="CTU">CTU &ndash; Chengdu</option>
+          <option value="ICN">ICN &ndash; Seoul Incheon</option>
+          <option value="HKG">HKG &ndash; Hong Kong</option>
+          <option value="TPE">TPE &ndash; Taipei Taoyuan</option>
+          <option value="NRT">NRT &ndash; Tokyo Narita</option>
+          <option value="HAN">HAN &ndash; Hanoi</option>
+        </select>
+      </label>
+      <label>Depart date <input name="depart_date" type="date" required></label>
+      <button type="submit">Show trend</button>
+    </form>
+    <div id="history-status" class="trend-status"></div>
+    <div id="history-airline-picker"></div>
+    <div class="chart-wrap"><canvas id="history-canvas" hidden></canvas></div>
+  </section>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script>
+const form = document.getElementById('search-form');
+const statusEl = document.getElementById('status');
+const table = document.getElementById('results');
+const tbody = table.querySelector('tbody');
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const data = new FormData(form);
+  const origin = data.get('origin').trim().toUpperCase();
+  const destination = data.get('destination').trim().toUpperCase();
+  const departDate = data.get('depart_date');
+
+  statusEl.textContent = 'Searching stored fares... (if none are stored yet, this will trigger a live scrape, which pops open a Chrome window and can take up to a minute — it checks Chinese carriers individually since they aren\'t in the default results)';
+  table.hidden = true;
+  tbody.innerHTML = '';
+
+  try {
+    const res = await fetch(`/api/fares?origin=${origin}&destination=${destination}&depart_date=${departDate}`);
+    if (!res.ok) {
+      let detail = `API error ${res.status}`;
+      try {
+        const errPayload = await res.json();
+        if (errPayload.detail) detail = errPayload.detail;
+      } catch (_) { /* response body wasn't JSON, fall back to the status message */ }
+      throw new Error(detail);
+    }
+    const payload = await res.json();
+    const fares = payload.fares || [];
+
+    if (fares.length === 0) {
+      statusEl.textContent = payload.scraped_now
+        ? 'No flights found for this route/date (just checked live).'
+        : 'No fares stored yet for this route/date.';
+      return;
+    }
+
+    statusEl.textContent = `${fares.length} airline(s) found, cheapest first.` + (payload.scraped_now ? ' (just scraped live)' : '');
+    fares.forEach((f, i) => {
+      const tr = document.createElement('tr');
+      if (i === 0) tr.classList.add('cheapest');
+      tr.innerHTML = `
+        <td>${escapeHtml(f.airline_name)} (${escapeHtml(f.airline_code)})</td>
+        <td>${escapeHtml(f.currency)} ${f.price.toFixed(2)}</td>
+        <td>${f.depart_time ? escapeHtml(f.depart_time) : '-'}</td>
+        <td>${f.arrive_time ? escapeHtml(f.arrive_time) : '-'}</td>
+        <td>${f.duration_mins ? Math.floor(f.duration_mins / 60) + 'h ' + (f.duration_mins % 60) + 'm' : '-'}</td>
+        <td>${f.is_direct ? 'Direct' : f.stops + ' stop(s)'}</td>
+        <td>${new Date(f.scraped_at).toLocaleString()}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+    table.hidden = false;
+  } catch (err) {
+    statusEl.textContent = `Error: ${err.message}`;
+  }
+});
+
+// --- Price Trends ---
+
+const TREND_COLORS = ['#4f8fef', '#e07a3f', '#3fae6b', '#c94f7c', '#9b6fe0', '#d9b23c', '#3fb3ae', '#e0574f'];
+function colorForAirline(code, seenCodes) {
+  let idx = seenCodes.indexOf(code);
+  if (idx === -1) { seenCodes.push(code); idx = seenCodes.length - 1; }
+  return TREND_COLORS[idx % TREND_COLORS.length];
+}
+
+async function fetchJson(url) {
+  const res = await fetch(url);
+  if (!res.ok) {
+    let detail = `API error ${res.status}`;
+    try {
+      const errPayload = await res.json();
+      if (errPayload.detail) detail = errPayload.detail;
+    } catch (_) { /* not JSON */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+function groupByAirline(rows) {
+  const byAirline = new Map();
+  for (const r of rows) {
+    if (!byAirline.has(r.airline_code)) {
+      byAirline.set(r.airline_code, { name: r.airline_name, code: r.airline_code, points: [] });
+    }
+    byAirline.get(r.airline_code).points.push(r);
+  }
+  return byAirline;
+}
+
+// Chart.js's "time" scale needs an extra date-adapter script — skipping that
+// dependency on purpose (keeping this a plain-HTML, no-build-step page) by
+// using the default category scale instead. IMPORTANT: category order comes
+// from Chart.js's *first-seen* order across datasets, not a sort — with
+// several airlines each missing different dates, that produced a scrambled,
+// non-chronological x-axis (confirmed live: labels came out like
+// "09-15, 09-18, 09-22, 09-25, 09-16, 09-17, ..."). Fixed by explicitly
+// building a sorted, deduped `labels` array below and passing it at the
+// chart-data level, which is what actually fixes category order — datasets
+// still use {x, y} points, matched against `labels` by value.
+function formatXValue(rawValue, xKey) {
+  if (xKey === 'depart_date') return rawValue; // already "YYYY-MM-DD", sorts correctly as a string
+  const d = new Date(rawValue);
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+const MAX_TREND_AIRLINES = 3;
+
+// Renders (or re-renders) a checkbox picker letting the user choose exactly
+// which MAX_TREND_AIRLINES airlines to compare, defaulting to the first 3
+// found. Every checkbox is always clickable — no disabled state to fight
+// with. Checking a new one past the limit automatically drops the
+// longest-selected airline (oldest-first eviction), so clicking whichever
+// airline you actually want always works, immediately. Calls
+// onChange(selectedCodes) once immediately and again on every change.
+function renderAirlinePicker(container, groups, onChange) {
+  const allCodes = [...groups.keys()];
+  const seenCodes = [];
+  let selected = allCodes.slice(0, MAX_TREND_AIRLINES); // ordered: oldest first
+
+  function setChecked(code, isChecked) {
+    const cb = container.querySelector(`input[value="${CSS.escape(code)}"]`);
+    if (cb) cb.checked = isChecked;
+  }
+
+  function update() {
+    note.textContent = `Comparing ${selected.length} of ${MAX_TREND_AIRLINES}: click any airline to swap it in`
+      + (selected.length >= MAX_TREND_AIRLINES ? ' (drops the longest-selected one).' : '.');
+    onChange([...selected]);
+  }
+
+  container.innerHTML = '';
+  for (const g of groups.values()) {
+    const color = colorForAirline(g.code, seenCodes);
+    const label = document.createElement('label');
+    label.dataset.code = g.code;
+    label.style.cssText = 'display:inline-flex; align-items:center; gap:0.3rem; margin-right:1rem; font-size:0.85rem; font-weight:normal; cursor:pointer;';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = g.code;
+    cb.checked = selected.includes(g.code);
+    cb.addEventListener('change', () => {
+      if (cb.checked) {
+        selected = selected.filter((c) => c !== g.code); // dedupe, then re-add at the end (most-recent)
+        if (selected.length >= MAX_TREND_AIRLINES) {
+          const evicted = selected.shift(); // drop the oldest-selected
+          setChecked(evicted, false);
+        }
+        selected.push(g.code);
+      } else {
+        selected = selected.filter((c) => c !== g.code);
+      }
+      update();
+    });
+    const swatch = document.createElement('span');
+    swatch.style.cssText = `display:inline-block; width:0.7rem; height:0.7rem; border-radius:50%; background:${color};`;
+    label.appendChild(cb);
+    label.appendChild(swatch);
+    label.appendChild(document.createTextNode(`${g.name} (${g.code})`)); // createTextNode is inherently safe, no escaping needed
+    container.appendChild(label);
+  }
+  const note = document.createElement('div');
+  note.style.cssText = 'font-size:0.8rem; opacity:0.75; margin-top:0.4rem;';
+  container.appendChild(note);
+
+  update();
+}
+
+function renderTrendChart(existingChart, canvas, groups, xKey, xLabel) {
+  canvas.hidden = false;
+  const seenCodes = [];
+
+  const allXValues = new Set();
+  for (const g of groups.values()) {
+    for (const p of g.points) allXValues.add(p[xKey]);
+  }
+  const sortedLabels = [...allXValues].sort(); // ISO date/datetime strings sort correctly lexicographically
+
+  const datasets = [...groups.values()].map((g) => {
+    const color = colorForAirline(g.code, seenCodes);
+    return {
+      label: `${g.name} (${g.code})`,
+      data: g.points.map((p) => ({ x: p[xKey], y: p.price })),
+      borderColor: color,
+      backgroundColor: color,
+      spanGaps: false, // real gaps in scraped dates should show as gaps, not be interpolated over
+      tension: 0.25,
+    };
+  });
+
+  // Chart.js's default text/grid colors are dark-gray, meant for a light
+  // background — nearly invisible on this page's dark theme. The page uses
+  // `color-scheme: light dark` (follows the OS setting) rather than a fixed
+  // theme, so match that instead of hardcoding one direction.
+  const isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const textColor = isDark ? '#e6e6e6' : '#1a1a1a';
+  const gridColor = isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.15)';
+
+  if (existingChart) existingChart.destroy();
+  return new Chart(canvas, {
+    type: 'line',
+    data: { labels: sortedLabels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false, // fill the fixed-height .chart-wrap instead (see its CSS comment)
+      parsing: true,
+      scales: {
+        x: {
+          type: 'category',
+          title: { display: true, text: xLabel, color: textColor },
+          ticks: { color: textColor, callback: (value, index) => formatXValue(sortedLabels[index], xKey) },
+          grid: { color: gridColor },
+        },
+        y: {
+          title: { display: true, text: 'Price (CAD)', color: textColor },
+          ticks: { color: textColor },
+          grid: { color: gridColor },
+          beginAtZero: false,
+        },
+      },
+      plugins: { legend: { position: 'bottom', labels: { color: textColor } } },
+    },
+  });
+}
+
+// Tab switching
+const tabBtnByDate = document.getElementById('tab-btn-bydate');
+const tabBtnHistory = document.getElementById('tab-btn-history');
+const panelByDate = document.getElementById('panel-bydate');
+const panelHistory = document.getElementById('panel-history');
+
+function switchTab(which) {
+  const showByDate = which === 'bydate';
+  panelByDate.hidden = !showByDate;
+  panelHistory.hidden = showByDate;
+  tabBtnByDate.setAttribute('aria-selected', String(showByDate));
+  tabBtnHistory.setAttribute('aria-selected', String(!showByDate));
+}
+tabBtnByDate.addEventListener('click', () => switchTab('bydate'));
+tabBtnHistory.addEventListener('click', () => switchTab('history'));
+
+function filterGroups(groups, selectedCodes) {
+  const selected = new Set(selectedCodes);
+  return new Map([...groups].filter(([code]) => selected.has(code)));
+}
+
+// "By departure date" panel
+let byDateChart = null;
+const byDateForm = document.getElementById('bydate-form');
+const byDateStatus = document.getElementById('bydate-status');
+const byDatePicker = document.getElementById('bydate-airline-picker');
+const byDateCanvas = document.getElementById('bydate-canvas');
+
+byDateForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const data = new FormData(byDateForm);
+  const origin = data.get('origin').trim().toUpperCase();
+  const destination = data.get('destination').trim().toUpperCase();
+  const startDate = data.get('start_date');
+  const endDate = data.get('end_date');
+
+  byDateStatus.textContent = 'Checking stored fares and live-scraping any missing dates in the range (each can take up to ~60s and pops a Chrome window)... this can take a few minutes for a wide range.';
+  byDatePicker.innerHTML = '';
+  byDateCanvas.hidden = true;
+
+  try {
+    const payload = await fetchJson(`/api/fares/by-date?origin=${origin}&destination=${destination}&start_date=${startDate}&end_date=${endDate}`);
+    const rows = payload.fares || [];
+    if (rows.length === 0) {
+      byDateStatus.textContent = payload.scraped_now
+        ? 'No flights found for any date in this range (just checked live).'
+        : 'No historical data yet for this range.';
+      return;
+    }
+    const groups = groupByAirline(rows);
+    byDateStatus.textContent = `${groups.size} airline(s) available across ${rows.length} data point(s).` + (payload.scraped_now ? ' (some or all just scraped live)' : '');
+    renderAirlinePicker(byDatePicker, groups, (selectedCodes) => {
+      byDateChart = renderTrendChart(byDateChart, byDateCanvas, filterGroups(groups, selectedCodes), 'depart_date', 'Departure date');
+    });
+  } catch (err) {
+    byDateStatus.textContent = `Error: ${err.message}`;
+  }
+});
+
+// "By scrape date" (price history) panel
+let historyChart = null;
+const historyForm = document.getElementById('history-form');
+const historyStatus = document.getElementById('history-status');
+const historyPicker = document.getElementById('history-airline-picker');
+const historyCanvas = document.getElementById('history-canvas');
+
+historyForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const data = new FormData(historyForm);
+  const origin = data.get('origin').trim().toUpperCase();
+  const destination = data.get('destination').trim().toUpperCase();
+  const departDate = data.get('depart_date');
+
+  historyStatus.textContent = 'Checking price history... (if there is none yet, this triggers one live scrape, which can take up to ~60s and pops a Chrome window)';
+  historyPicker.innerHTML = '';
+  historyCanvas.hidden = true;
+
+  try {
+    const payload = await fetchJson(`/api/fares/history?origin=${origin}&destination=${destination}&depart_date=${departDate}`);
+    const rows = payload.history || [];
+    if (rows.length === 0) {
+      historyStatus.textContent = payload.scraped_now
+        ? 'No flights found for this route/date (just checked live).'
+        : 'No price history yet for this route/date.';
+      return;
+    }
+    const groups = groupByAirline(rows);
+    historyStatus.textContent = `${groups.size} airline(s) available across ${rows.length} data point(s).` + (payload.scraped_now ? ' (just scraped live to seed this)' : '') + ' Come back on a later day and search again to add more points to the trend.';
+    renderAirlinePicker(historyPicker, groups, (selectedCodes) => {
+      historyChart = renderTrendChart(historyChart, historyCanvas, filterGroups(groups, selectedCodes), 'scraped_at', 'Scraped at');
+    });
+  } catch (err) {
+    historyStatus.textContent = `Error: ${err.message}`;
+  }
+});
+</script>
+</body>
+</html>

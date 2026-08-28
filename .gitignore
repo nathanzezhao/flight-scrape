@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+dev_fares.db
+.vercel/
+node_modules/
