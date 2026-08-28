@@ -80,6 +80,18 @@ def _live_scrape(origin: str, destination: str, depart_date) -> list:
     return results
 
 
+def _parse_date(value: str, field_name: str):
+    """Parse a YYYY-MM-DD string into a date, raising a clean 422 for a
+    calendar-invalid value (e.g. 2026-13-45) rather than letting it surface
+    later as a confusing 5xx (a raw ValueError from a bad date used to slip
+    past the query-param regex, which only checks shape, not validity, and
+    get caught downstream as a bogus "live scrape failed" error)."""
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid {field_name}: {value!r} is not a real calendar date")
+
+
 def _scraper_unavailable_response(e: ScraperUnavailable) -> HTTPException:
     return HTTPException(
         status_code=501,
@@ -106,16 +118,25 @@ def get_fares(
     depart_date: str = Query(..., description="YYYY-MM-DD", pattern=r"^\d{4}-\d{2}-\d{2}$"),
     airlines: str = Query(None, description="Comma-separated airline codes, e.g. CZ,MF,AC"),
 ):
+    depart_date_obj = _parse_date(depart_date, "depart_date")
     airline_list = [a.strip().upper() for a in airlines.split(",")] if airlines else None
     try:
         rows = fetch_fares(origin, destination, depart_date, airline_list)
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+    # Only scrape when the route/date has NO data at all — not when an
+    # airline filter just happens to match nothing (e.g. a typo'd or
+    # nonexistent code). Scraping again wouldn't manufacture a flight for an
+    # airline that simply isn't in the results; it'd just waste ~a minute
+    # and pop a Chrome window for no benefit. Found live: `airlines=ZZ` on a
+    # route/date with real data for other airlines was triggering a scrape.
+    needs_scrape = not rows and (airline_list is None or not fetch_fares(origin, destination, depart_date, None))
+
     scraped_now = False
-    if not rows:
+    if needs_scrape:
         try:
-            _live_scrape(origin, destination, datetime.strptime(depart_date, "%Y-%m-%d").date())
+            _live_scrape(origin, destination, depart_date_obj)
         except ScraperUnavailable as e:
             raise _scraper_unavailable_response(e)
         except Exception as e:
@@ -146,11 +167,10 @@ def get_fares_by_date(
     for every date in the range that has no stored fares yet — this can mean
     several sequential live scrapes (each up to ~60s), so the range is capped
     at MAX_ONDEMAND_RANGE_DAYS to keep a single request bounded."""
-    if end_date < start_date:
+    start_d = _parse_date(start_date, "start_date")
+    end_d = _parse_date(end_date, "end_date")
+    if end_d < start_d:
         raise HTTPException(status_code=422, detail="end_date must not be before start_date")
-
-    start_d = datetime.strptime(start_date, "%Y-%m-%d").date()
-    end_d = datetime.strptime(end_date, "%Y-%m-%d").date()
     span_days = (end_d - start_d).days + 1
     if span_days > MAX_ONDEMAND_RANGE_DAYS:
         raise HTTPException(
@@ -204,12 +224,13 @@ def get_fares_history(
     book now or wait"). If there's no history yet, does one live scrape to
     seed the first data point — repeated visits over following days/weeks
     (each also scraping if there's nothing newer) are what build the trend."""
+    depart_date_obj = _parse_date(depart_date, "depart_date")
     rows = fetch_price_history(origin, destination, depart_date)
 
     scraped_now = False
     if not rows:
         try:
-            _live_scrape(origin, destination, datetime.strptime(depart_date, "%Y-%m-%d").date())
+            _live_scrape(origin, destination, depart_date_obj)
         except ScraperUnavailable as e:
             raise _scraper_unavailable_response(e)
         except Exception as e:
