@@ -63,8 +63,9 @@ limitations (see `scraper/tripcom.py` docstring for full details):
 - **Trip.com's default results view is incomplete by design** — it only
   renders a curated subset (e.g. 8 of 38 actual flights on one real search),
   hiding the rest behind per-airline sidebar filters with no visible "load
-  more". `search()` does one extra filtered pass per Chinese carrier (China
-  Eastern, China Southern, Air China, Xiamen, Sichuan, Hainan) not already in
+  more". `search()` does one extra filtered pass per priority carrier (China
+  Eastern, China Southern, Air China, Xiamen, Sichuan, Hainan, plus Air
+  Canada, Cathay Pacific, Korean Air, and Hong Kong Airlines) not already in
   the default view, since that's this project's specific interest — verified
   live this successfully surfaces China Southern and Air China when they have
   inventory (~75% of test runs; the rest is either genuine live-inventory

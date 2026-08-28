@@ -58,11 +58,12 @@ the first (raises DrissionPage `NoRectError` — the sidebar DOM apparently
 doesn't stay in a clickable state after the first filter is applied). The
 only pattern that worked consistently: fresh page load -> click exactly one
 airline filter -> collect its cards. `search()` below uses this: it collects
-the default view, then does one fresh reload + filter click per Chinese
-carrier (see CHINESE_AIRLINE_CODES) that isn't already covered — targeted at
-Chinese carriers specifically because that's this project's actual interest,
-not a general fix for exhaustive coverage of every airline on every route
-(doing that for all ~12 airlines would mean ~12 page loads per search).
+the default view, then does one fresh reload + filter click per priority
+carrier (see PRIORITY_AIRLINE_CODES) that isn't already covered — targeted at
+this project's specific carriers of interest (mainland Chinese carriers plus
+Air Canada/Cathay Pacific/Korean Air/Hong Kong Airlines), not a general fix
+for exhaustive coverage of every airline on every route (doing that for all
+~12 airlines would mean ~12 page loads per search).
 Also note: `.filter-item[data-code]` isn't airline-only — the same attribute
 is used for stop-count, alliance, airport, cabin-class, and amenity filters
 too (e.g. `data-code="DIRECT"`, `data-code="SA"` for Star Alliance,
@@ -120,13 +121,15 @@ SEARCH_URL_TEMPLATE = (
 CARD_SELECTOR = "css:.result-item.J_FlightItem"
 RESULTS_WAIT_SECONDS = 20
 
-# Mainland Chinese carriers this project cares about (see project history —
-# originally scoped as 7 airlines before pivoting to this aggregator). Not
-# meant to be exhaustive of every Chinese airline, just the ones worth an
-# extra per-search round-trip to check for. Codes per Trip.com's own
-# `data-code` attribute, confirmed for CZ/CA live; others taken from IATA
-# codes and not yet individually confirmed against a route where they appear.
-CHINESE_AIRLINE_CODES = ["MU", "CZ", "CA", "MF", "3U", "HU"]
+# Priority carriers this project wants guaranteed to be checked, even when
+# Trip.com's default view hides them: mainland Chinese carriers (MU, CZ, CA,
+# MF, 3U, HU) plus other airlines of specific interest (AC Air Canada, CX
+# Cathay Pacific, KE Korean Air, HX Hong Kong Airlines). Not meant to be
+# exhaustive of every airline Trip.com lists, just the ones worth an extra
+# per-search round-trip to check for. Codes per Trip.com's own `data-code`
+# attribute, confirmed for CZ/CA live; others taken from IATA codes and not
+# yet individually confirmed against a route where they appear.
+PRIORITY_AIRLINE_CODES = ["AC", "MU", "CX", "HU", "CA", "CZ", "KE", "MF", "HX", "3U"]
 
 _ARIA_LABEL_RE = re.compile(
     r"departing from .*? at (?P<dep>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*?"
@@ -252,7 +255,7 @@ def _collect_cards(page, request: SearchRequest, currency: str) -> List[FareResu
 def search(request: SearchRequest, currency: str = "CAD", headless: bool = False) -> List[FareResult]:
     """Search Trip.com for a route/date and return one FareResult per listed flight.
 
-    Includes an extra pass per Chinese carrier (see CHINESE_AIRLINE_CODES)
+    Includes an extra pass per priority carrier (see PRIORITY_AIRLINE_CODES)
     not already present in the default view, since Trip.com's default view
     hides most of its real inventory behind per-airline sidebar filters (see
     module docstring's "DEFAULT RESULTS ARE INCOMPLETE" section).
@@ -286,7 +289,7 @@ def search(request: SearchRequest, currency: str = "CAD", headless: bool = False
             results = _collect_cards(page, request, currency)
         seen_codes = {r.airline_code for r in results}
 
-        for code in CHINESE_AIRLINE_CODES:
+        for code in PRIORITY_AIRLINE_CODES:
             if code in seen_codes:
                 continue
             # Fresh reload before each filter click — clicking a second

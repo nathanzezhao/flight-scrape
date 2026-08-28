@@ -32,32 +32,21 @@
   <h1>Flight Fare Comparison</h1>
   <form id="search-form">
     <label>Origin
-      <select name="origin" required>
-        <option value="YVR" selected>YVR &ndash; Vancouver</option>
-        <option value="YYZ">YYZ &ndash; Toronto</option>
-        <option value="YYC">YYC &ndash; Calgary</option>
-        <option value="YUL">YUL &ndash; Montreal</option>
-        <option value="YHZ">YHZ &ndash; Halifax</option>
-      </select>
+      <select name="origin" required></select>
     </label>
     <label>Destination
-      <select name="destination" required>
-        <option value="PVG" selected>PVG &ndash; Shanghai Pudong</option>
-        <option value="PEK">PEK &ndash; Beijing Capital</option>
-        <option value="CAN">CAN &ndash; Guangzhou</option>
-        <option value="XMN">XMN &ndash; Xiamen</option>
-        <option value="CTU">CTU &ndash; Chengdu</option>
-        <option value="ICN">ICN &ndash; Seoul Incheon</option>
-        <option value="HKG">HKG &ndash; Hong Kong</option>
-        <option value="TPE">TPE &ndash; Taipei Taoyuan</option>
-        <option value="NRT">NRT &ndash; Tokyo Narita</option>
-        <option value="HAN">HAN &ndash; Hanoi</option>
-      </select>
+      <select name="destination" required></select>
     </label>
     <label>Depart date <input name="depart_date" type="date" required></label>
     <button type="submit">Compare</button>
   </form>
   <div id="status"></div>
+  <div id="stops-filter" class="tabs" hidden>
+    <button type="button" class="tab-btn" data-stops="all" aria-selected="true">All</button>
+    <button type="button" class="tab-btn" data-stops="direct" aria-selected="false">Direct</button>
+    <button type="button" class="tab-btn" data-stops="1" aria-selected="false">1 stop</button>
+    <button type="button" class="tab-btn" data-stops="2plus" aria-selected="false">2+ stops</button>
+  </div>
   <table id="results" hidden>
     <thead>
       <tr><th>Airline</th><th>Price</th><th>Depart</th><th>Arrive</th><th>Duration</th><th>Stops</th><th>Scraped</th></tr>
@@ -75,27 +64,10 @@
     <p style="opacity:0.75; font-size:0.9rem;">Compare which day is cheapest to fly. Any date in the range with no data yet gets scraped live, one date at a time (real Chrome window, up to ~60s each) &mdash; ranges over 14 days aren't allowed in one go, since that's a lot of sequential scraping.</p>
     <form id="bydate-form">
       <label>Origin
-        <select name="origin" required>
-          <option value="YVR" selected>YVR &ndash; Vancouver</option>
-          <option value="YYZ">YYZ &ndash; Toronto</option>
-          <option value="YYC">YYC &ndash; Calgary</option>
-          <option value="YUL">YUL &ndash; Montreal</option>
-          <option value="YHZ">YHZ &ndash; Halifax</option>
-        </select>
+        <select name="origin" required></select>
       </label>
       <label>Destination
-        <select name="destination" required>
-          <option value="PVG" selected>PVG &ndash; Shanghai Pudong</option>
-          <option value="PEK">PEK &ndash; Beijing Capital</option>
-          <option value="CAN">CAN &ndash; Guangzhou</option>
-          <option value="XMN">XMN &ndash; Xiamen</option>
-          <option value="CTU">CTU &ndash; Chengdu</option>
-          <option value="ICN">ICN &ndash; Seoul Incheon</option>
-          <option value="HKG">HKG &ndash; Hong Kong</option>
-          <option value="TPE">TPE &ndash; Taipei Taoyuan</option>
-          <option value="NRT">NRT &ndash; Tokyo Narita</option>
-          <option value="HAN">HAN &ndash; Hanoi</option>
-        </select>
+        <select name="destination" required></select>
       </label>
       <label>Start date <input name="start_date" type="date" required></label>
       <label>End date <input name="end_date" type="date" required></label>
@@ -110,27 +82,10 @@
     <p style="opacity:0.75; font-size:0.9rem;">Track how one specific flight's price has moved as it's been re-scraped over time &mdash; is it worth booking now or waiting?</p>
     <form id="history-form">
       <label>Origin
-        <select name="origin" required>
-          <option value="YVR" selected>YVR &ndash; Vancouver</option>
-          <option value="YYZ">YYZ &ndash; Toronto</option>
-          <option value="YYC">YYC &ndash; Calgary</option>
-          <option value="YUL">YUL &ndash; Montreal</option>
-          <option value="YHZ">YHZ &ndash; Halifax</option>
-        </select>
+        <select name="origin" required></select>
       </label>
       <label>Destination
-        <select name="destination" required>
-          <option value="PVG" selected>PVG &ndash; Shanghai Pudong</option>
-          <option value="PEK">PEK &ndash; Beijing Capital</option>
-          <option value="CAN">CAN &ndash; Guangzhou</option>
-          <option value="XMN">XMN &ndash; Xiamen</option>
-          <option value="CTU">CTU &ndash; Chengdu</option>
-          <option value="ICN">ICN &ndash; Seoul Incheon</option>
-          <option value="HKG">HKG &ndash; Hong Kong</option>
-          <option value="TPE">TPE &ndash; Taipei Taoyuan</option>
-          <option value="NRT">NRT &ndash; Tokyo Narita</option>
-          <option value="HAN">HAN &ndash; Hanoi</option>
-        </select>
+        <select name="destination" required></select>
       </label>
       <label>Depart date <input name="depart_date" type="date" required></label>
       <button type="submit">Show trend</button>
@@ -142,15 +97,118 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <script>
+const ORIGINS = [
+  { code: 'YVR', name: 'Vancouver' },
+  { code: 'YYZ', name: 'Toronto' },
+  { code: 'YYC', name: 'Calgary' },
+  { code: 'YUL', name: 'Montreal' },
+  { code: 'YHZ', name: 'Halifax' },
+];
+const DESTINATIONS = [
+  { code: 'PVG', name: 'Shanghai Pudong' },
+  { code: 'PEK', name: 'Beijing Capital' },
+  { code: 'CAN', name: 'Guangzhou' },
+  { code: 'XMN', name: 'Xiamen' },
+  { code: 'CTU', name: 'Chengdu' },
+  { code: 'ICN', name: 'Seoul Incheon' },
+  { code: 'HKG', name: 'Hong Kong' },
+  { code: 'TPE', name: 'Taipei Taoyuan' },
+  { code: 'NRT', name: 'Tokyo Narita' },
+  { code: 'HAN', name: 'Hanoi' },
+  { code: 'TAO', name: 'Qingdao' },
+  { code: 'WUH', name: 'Wuhan' },
+  { code: 'FOC', name: 'Fuzhou' },
+  { code: 'XIY', name: "Xi'an" },
+  { code: 'CKG', name: 'Chongqing' },
+  { code: 'SWA', name: 'Shantou' },
+  { code: 'CGQ', name: 'Changchun' },
+  { code: 'DLC', name: 'Dalian' },
+  { code: 'NKG', name: 'Nanjing' },
+  { code: 'HGH', name: 'Hangzhou' },
+  { code: 'KMG', name: 'Kunming' },
+  { code: 'MNL', name: 'Manila' },
+  { code: 'INC', name: 'Yinchuan' },
+  { code: 'DEL', name: 'Delhi' },
+  { code: 'HKT', name: 'Phuket' },
+  { code: 'BKK', name: 'Bangkok' },
+  { code: 'SGN', name: 'Ho Chi Minh City' },
+];
+
+function populateSelect(selectEl, list, defaultCode) {
+  selectEl.innerHTML = '';
+  for (const { code, name } of list) {
+    const opt = document.createElement('option');
+    opt.value = code;
+    opt.textContent = `${code} – ${name}`;
+    if (code === defaultCode) opt.selected = true;
+    selectEl.appendChild(opt);
+  }
+}
+
+for (const form of document.querySelectorAll('form')) {
+  const originSelect = form.querySelector('select[name="origin"]');
+  const destinationSelect = form.querySelector('select[name="destination"]');
+  if (originSelect) populateSelect(originSelect, ORIGINS, 'YVR');
+  if (destinationSelect) populateSelect(destinationSelect, DESTINATIONS, 'PVG');
+}
+
 const form = document.getElementById('search-form');
 const statusEl = document.getElementById('status');
 const table = document.getElementById('results');
 const tbody = table.querySelector('tbody');
+const stopsFilterEl = document.getElementById('stops-filter');
+let lastFares = [];
+let stopsFilter = 'all';
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[c]));
+}
+
+function stopsLabel(f) {
+  const detail = f.raw_details && f.raw_details.stop_text ? f.raw_details.stop_text : null;
+  if (f.is_direct) return detail || 'Direct';
+  const base = `${f.stops} stop(s)`;
+  return detail ? `${base} — ${detail}` : base;
+}
+
+function matchesStopsFilter(f) {
+  if (stopsFilter === 'all') return true;
+  if (stopsFilter === 'direct') return f.is_direct;
+  if (stopsFilter === '1') return !f.is_direct && f.stops === 1;
+  if (stopsFilter === '2plus') return !f.is_direct && f.stops >= 2;
+  return true;
+}
+
+function renderFaresTable(fares) {
+  const filtered = fares.filter(matchesStopsFilter);
+  tbody.innerHTML = '';
+  filtered.forEach((f, i) => {
+    const tr = document.createElement('tr');
+    if (i === 0) tr.classList.add('cheapest');
+    tr.innerHTML = `
+      <td>${escapeHtml(f.airline_name)} (${escapeHtml(f.airline_code)})</td>
+      <td>${escapeHtml(f.currency)} ${f.price.toFixed(2)}</td>
+      <td>${f.depart_time ? escapeHtml(f.depart_time) : '-'}</td>
+      <td>${f.arrive_time ? escapeHtml(f.arrive_time) : '-'}</td>
+      <td>${f.duration_mins ? Math.floor(f.duration_mins / 60) + 'h ' + (f.duration_mins % 60) + 'm' : '-'}</td>
+      <td>${escapeHtml(stopsLabel(f))}</td>
+      <td>${new Date(f.scraped_at).toLocaleString()}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+  table.hidden = filtered.length === 0;
+}
+
+for (const btn of stopsFilterEl.querySelectorAll('button')) {
+  btn.addEventListener('click', () => {
+    stopsFilter = btn.dataset.stops;
+    for (const b of stopsFilterEl.querySelectorAll('button')) {
+      b.setAttribute('aria-selected', String(b === btn));
+    }
+    renderFaresTable(lastFares);
+  });
 }
 
 form.addEventListener('submit', async (e) => {
@@ -160,7 +218,8 @@ form.addEventListener('submit', async (e) => {
   const destination = data.get('destination').trim().toUpperCase();
   const departDate = data.get('depart_date');
 
-  statusEl.textContent = 'Searching stored fares... (if none are stored yet, this will trigger a live scrape, which pops open a Chrome window and can take up to a minute — it checks Chinese carriers individually since they aren\'t in the default results)';
+  statusEl.textContent = 'Searching stored fares... (if none are stored yet, this will trigger a live scrape, which pops open a Chrome window and can take up to a minute — it checks priority carriers individually since they aren\'t in the default results)';
+  stopsFilterEl.hidden = true;
   table.hidden = true;
   tbody.innerHTML = '';
 
@@ -176,6 +235,7 @@ form.addEventListener('submit', async (e) => {
     }
     const payload = await res.json();
     const fares = payload.fares || [];
+    lastFares = fares;
 
     if (fares.length === 0) {
       statusEl.textContent = payload.scraped_now
@@ -185,21 +245,12 @@ form.addEventListener('submit', async (e) => {
     }
 
     statusEl.textContent = `${fares.length} airline(s) found, cheapest first.` + (payload.scraped_now ? ' (just scraped live)' : '');
-    fares.forEach((f, i) => {
-      const tr = document.createElement('tr');
-      if (i === 0) tr.classList.add('cheapest');
-      tr.innerHTML = `
-        <td>${escapeHtml(f.airline_name)} (${escapeHtml(f.airline_code)})</td>
-        <td>${escapeHtml(f.currency)} ${f.price.toFixed(2)}</td>
-        <td>${f.depart_time ? escapeHtml(f.depart_time) : '-'}</td>
-        <td>${f.arrive_time ? escapeHtml(f.arrive_time) : '-'}</td>
-        <td>${f.duration_mins ? Math.floor(f.duration_mins / 60) + 'h ' + (f.duration_mins % 60) + 'm' : '-'}</td>
-        <td>${f.is_direct ? 'Direct' : f.stops + ' stop(s)'}</td>
-        <td>${new Date(f.scraped_at).toLocaleString()}</td>
-      `;
-      tbody.appendChild(tr);
-    });
-    table.hidden = false;
+    stopsFilter = 'all';
+    for (const b of stopsFilterEl.querySelectorAll('button')) {
+      b.setAttribute('aria-selected', String(b.dataset.stops === 'all'));
+    }
+    stopsFilterEl.hidden = false;
+    renderFaresTable(lastFares);
   } catch (err) {
     statusEl.textContent = `Error: ${err.message}`;
   }

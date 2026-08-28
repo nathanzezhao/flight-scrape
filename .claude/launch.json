@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web-preview",
+      "runtimeExecutable": "/Users/nathan/flight scrape mom/.venv/bin/uvicorn",
+      "runtimeArgs": [
+        "preview_app:app",
+        "--app-dir",
+        "/private/tmp/claude-501/-Users-nathan-flight-scrape-mom/9efd8707-de6e-42bc-982d-c6f01436b7fb/scratchpad",
+        "--port",
+        "8000"
+      ],
+      "port": 8000
+    }
+  ]
+}

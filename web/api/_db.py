@@ -5,6 +5,7 @@ run locally against the dev SQLite fallback the scraper layer uses, without
 needing a real Postgres instance for local testing. In production on Vercel,
 set DATABASE_URL (Vercel Postgres / Neon integration sets this automatically).
 """
+import json
 import os
 
 from sqlalchemy import bindparam, create_engine, text
@@ -51,7 +52,8 @@ def fetch_fares(origin: str, destination: str, depart_date: str, airlines=None) 
     """Latest fare per airline for a given route/date, cheapest first."""
     query = """
         SELECT id, airline_code, airline_name, origin, destination, depart_date, return_date,
-               price, currency, is_direct, depart_time, arrive_time, duration_mins, stops, scraped_at
+               price, currency, is_direct, depart_time, arrive_time, duration_mins, stops,
+               raw_details, scraped_at
         FROM fares
         WHERE origin = :origin AND destination = :destination AND depart_date = :depart_date
     """
@@ -90,6 +92,17 @@ def fetch_fares(origin: str, destination: str, depart_date: str, airlines=None) 
             v = r.get(k)
             if v is not None and hasattr(v, "isoformat"):
                 r[k] = v.isoformat()
+        # raw_details is a JSON column, but this query goes through raw text()
+        # SQL rather than the ORM, so it isn't auto-decoded — the dev SQLite
+        # fallback (JSON stored as TEXT, no driver-side JSON support) comes
+        # back as a plain string, while Postgres/psycopg2 already hands back
+        # a parsed dict. Normalize so the frontend always gets an object.
+        raw = r.get("raw_details")
+        if isinstance(raw, str):
+            try:
+                r["raw_details"] = json.loads(raw)
+            except (TypeError, ValueError):
+                r["raw_details"] = None
     return result
 
 
