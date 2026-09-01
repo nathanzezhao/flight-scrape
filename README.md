@@ -81,7 +81,17 @@ limitations (see `scraper/tripcom.py` docstring for full details):
 - General exhaustive coverage (every airline, not just the Chinese-carrier
   subset) isn't implemented — would need the same per-filter reload pattern
   applied to every airline in the sidebar, at a real time cost (each extra
-  airline is a full page reload, ~5-8s).
+  airline is a full page reload plus a ~4s pacing delay, ~9-12s).
+- **Selecting many/all airlines in one scrape can trigger Trip.com's bot
+  challenge** — confirmed live: a user selecting all 13 airlines across
+  several dates in one session got only 2 airlines back with no error
+  surfaced, because enough rapid reloads in one browser session tripped
+  Trip.com's slide-to-verify challenge partway through (every pass after
+  that silently found no cards). A pacing delay between reloads
+  (`EXTRA_PASS_DELAY_SECONDS` in `scraper/tripcom.py`) reduces how often
+  this triggers, but this project doesn't attempt to detect or defeat the
+  challenge itself — if results look suspiciously sparse across many
+  airlines for one search, this is the likely cause.
 
 ## Price trend charts
 
@@ -104,6 +114,28 @@ on-demand scrape, same as `/api/fares` — every fare endpoint now shares one
   first point); once any history exists it's read-only, so the trend
   actually builds from repeat visits over days/weeks rather than every page
   load re-scraping the same date.
+
+**Pick which airlines to scrape.** All three fare endpoints/forms now have a
+checkbox row (`TRACKED_AIRLINES` in `web/public/index.html`, all 13 checked
+by default) letting you narrow which airlines actually get requested before
+submitting — each extra priority carrier costs a full page reload
+(`scraper/tripcom.py`), so checking just 1-2 instead of all 13 is a real
+speedup (verified live: ~6s for 1 airline vs. ~57-59s for the full default
+pass). Unchecking everything or leaving everything checked both fall back to
+the default (all priority airlines) rather than sending an empty filter.
+Once a route/date is scraped, it's cached regardless of which airlines were
+selected that time — requesting a *different* subset later for an
+already-covered date/range reads whatever's cached (possibly nothing for an
+airline that was never actually scraped) rather than wastefully re-scraping,
+mirroring the earlier `airlines=ZZ` fix.
+
+**Compare chart + data table + Excel export.** Both trend charts keep the
+existing ≤3-airline compare picker (`renderAirlinePicker`), and now also
+render a plain HTML table of the same points below the chart, plus an
+"Export to Excel" button producing a real `.xlsx` (via
+[SheetJS](https://sheetjs.com/), loaded as a CDN `<script>` tag, same
+zero-build-step approach as Chart.js) — not CSV, the user specifically
+wanted real Excel format.
 
 Charting uses [Chart.js](https://www.chartjs.org/) via a plain CDN
 `<script>` tag (`web/public/index.html`) — **not** the Bklit UI library the

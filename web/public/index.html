@@ -26,10 +26,17 @@
      loop (a well-known Chart.js gotcha) — this wrapper is that fixed height. */
   .chart-wrap { position: relative; height: 400px; max-width: 100%; }
   .chart-wrap canvas { max-width: 100%; }
+  .airline-checkboxes { display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; margin: 0.5rem 0 1rem; width: 100%; }
+  .airline-checkboxes label { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.8rem; font-weight: normal; cursor: pointer; }
+  .airline-checkboxes .swatch, .trend-table-wrap .swatch { display: inline-block; width: 0.65rem; height: 0.65rem; border-radius: 50%; flex: none; }
+  .trend-table-wrap { margin-top: 1.5rem; }
+  .trend-table-wrap table { font-size: 0.85rem; }
+  .export-btn { margin-bottom: 0.5rem; }
 </style>
 </head>
 <body>
   <h1>Flight Fare Comparison</h1>
+  <p id="tracked-airlines" style="opacity:0.75; font-size:0.85rem; margin-top:-0.5rem;"></p>
   <form id="search-form">
     <label>Origin
       <select name="origin" required></select>
@@ -40,6 +47,7 @@
     <label>Depart date <input name="depart_date" type="date" required></label>
     <button type="submit">Compare</button>
   </form>
+  <div id="search-airlines" class="airline-checkboxes"></div>
   <div id="status"></div>
   <div id="stops-filter" class="tabs" hidden>
     <button type="button" class="tab-btn" data-stops="all" aria-selected="true">All</button>
@@ -73,9 +81,14 @@
       <label>End date <input name="end_date" type="date" required></label>
       <button type="submit">Show trend</button>
     </form>
+    <div id="bydate-scrape-airlines" class="airline-checkboxes"></div>
     <div id="bydate-status" class="trend-status"></div>
     <div id="bydate-airline-picker"></div>
-    <div class="chart-wrap"><canvas id="bydate-canvas" hidden></canvas></div>
+    <div id="bydate-chart-wrap" class="chart-wrap" hidden><canvas id="bydate-canvas"></canvas></div>
+    <div id="bydate-table-wrap" class="trend-table-wrap" hidden>
+      <button type="button" id="bydate-export" class="export-btn">Export to Excel</button>
+      <table id="bydate-table"><thead><tr><th>Airline</th><th>Departure date</th><th>Price (CAD)</th></tr></thead><tbody></tbody></table>
+    </div>
   </section>
 
   <section id="panel-history" class="trend-panel" hidden>
@@ -90,12 +103,18 @@
       <label>Depart date <input name="depart_date" type="date" required></label>
       <button type="submit">Show trend</button>
     </form>
+    <div id="history-scrape-airlines" class="airline-checkboxes"></div>
     <div id="history-status" class="trend-status"></div>
     <div id="history-airline-picker"></div>
-    <div class="chart-wrap"><canvas id="history-canvas" hidden></canvas></div>
+    <div id="history-chart-wrap" class="chart-wrap" hidden><canvas id="history-canvas"></canvas></div>
+    <div id="history-table-wrap" class="trend-table-wrap" hidden>
+      <button type="button" id="history-export" class="export-btn">Export to Excel</button>
+      <table id="history-table"><thead><tr><th>Airline</th><th>Scraped at</th><th>Price (CAD)</th></tr></thead><tbody></tbody></table>
+    </div>
   </section>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script>
 const ORIGINS = [
   { code: 'YVR', name: 'Vancouver' },
@@ -136,6 +155,101 @@ const DESTINATIONS = [
   { code: 'SIN', name: 'Singapore' },
 ];
 
+// Kept in sync with PRIORITY_AIRLINE_CODES in scraper/tripcom.py — the
+// specific airlines this project always checks for, even when Trip.com's
+// default results view hides them.
+const TRACKED_AIRLINES = [
+  { code: 'AC', name: 'Air Canada' },
+  { code: 'MU', name: 'China Eastern' },
+  { code: 'CZ', name: 'China Southern' },
+  { code: 'CA', name: 'Air China' },
+  { code: 'HU', name: 'Hainan Airlines' },
+  { code: 'MF', name: 'Xiamen Airlines' },
+  { code: '3U', name: 'Sichuan Airlines' },
+  { code: 'KE', name: 'Korean Air' },
+  { code: 'HX', name: 'Hong Kong Airlines' },
+  { code: 'CX', name: 'Cathay Pacific' },
+  { code: 'BR', name: 'EVA Air' },
+  { code: 'CI', name: 'China Airlines' },
+  { code: 'JL', name: 'Japan Airlines' },
+];
+// 14 distinct colors — one per TRACKED_AIRLINES entry (13) plus headroom.
+// IMPORTANT: colorForAirline is a pure function of `code` alone (no mutable
+// per-call state). It used to take a `seenCodes` array that each caller
+// built fresh from scratch — since the airline-picker (iterates ALL
+// airlines) and the chart (iterates only the ≤3 SELECTED ones) each built
+// their own array, the same airline could land at a different index — and
+// thus a different color — in each. Worse, the selected airlines always
+// landed at index 0/1/2 *within the chart's own render*, so chart lines
+// always came out in the same 2-3 colors regardless of which airlines were
+// actually picked (confirmed live: swatches showed varied colors, chart
+// lines were always blue/orange/green). Fixed by keying color off each
+// airline's fixed position in TRACKED_AIRLINES instead of render-order.
+// Defined right here (not down with the other Price Trends code) because
+// renderAirlineCheckboxes() below calls it during page init, and a `const`
+// is in its temporal-dead-zone until its own declaration line runs — unlike
+// a function declaration, which is fully hoisted, referencing a not-yet-
+// declared const from an earlier-running function throws a ReferenceError.
+const TREND_COLORS = [
+  '#4f8fef', '#e07a3f', '#3fae6b', '#c94f7c', '#9b6fe0', '#d9b23c', '#3fb3ae',
+  '#e0574f', '#5ec2e0', '#a3c93f', '#e08fc9', '#7a6fe0', '#c9a03f', '#4fefc0',
+];
+function colorForAirline(code) {
+  const idx = TRACKED_AIRLINES.findIndex((a) => a.code === code);
+  if (idx !== -1) return TREND_COLORS[idx % TREND_COLORS.length];
+  // Fallback for airlines outside the tracked 13 (live results can include
+  // others, e.g. United/ANA seen in earlier testing) — stable hash of the
+  // code so it's still always the same color everywhere, just not
+  // guaranteed collision-free with a tracked airline's color.
+  let hash = 0;
+  for (let i = 0; i < code.length; i++) hash = (hash * 31 + code.charCodeAt(i)) >>> 0;
+  return TREND_COLORS[hash % TREND_COLORS.length];
+}
+
+const trackedEl = document.getElementById('tracked-airlines');
+if (trackedEl) {
+  trackedEl.textContent = 'Tracked airlines: ' + TRACKED_AIRLINES.map(a => `${a.name} (${a.code})`).join(', ');
+}
+
+// Pre-scrape airline checkboxes (all checked by default) — lets the user
+// narrow which airlines actually get requested/scraped before submitting,
+// instead of always checking all 13 tracked airlines every time. Fewer
+// checked airlines = fewer extra page-reload passes = a meaningfully faster
+// scrape (see scraper/tripcom.py's priority-carrier pass). Swatches use the
+// same colorForAirline() as the trend charts for visual consistency, even
+// though colorForAirline is defined further down — safe because function
+// declarations are hoisted, and this only actually runs after full load.
+function renderAirlineCheckboxes(container) {
+  container.innerHTML = '';
+  for (const a of TRACKED_AIRLINES) {
+    const label = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = a.code;
+    cb.checked = true;
+    const swatch = document.createElement('span');
+    swatch.className = 'swatch';
+    swatch.style.background = colorForAirline(a.code);
+    label.appendChild(cb);
+    label.appendChild(swatch);
+    label.appendChild(document.createTextNode(a.code));
+    container.appendChild(label);
+  }
+}
+
+function getCheckedAirlines(container) {
+  return [...container.querySelectorAll('input[type=checkbox]:checked')].map((cb) => cb.value);
+}
+
+// airlines= is omitted (not sent) when everything is checked or nothing is
+// checked, falling back to the API's own default (all priority airlines) —
+// only sent when the user has deliberately narrowed the selection.
+function airlinesQueryParam(container) {
+  const checked = getCheckedAirlines(container);
+  if (checked.length === 0 || checked.length === TRACKED_AIRLINES.length) return '';
+  return `&airlines=${checked.join(',')}`;
+}
+
 function populateSelect(selectEl, list, defaultCode) {
   selectEl.innerHTML = '';
   for (const { code, name } of list) {
@@ -153,8 +267,13 @@ for (const form of document.querySelectorAll('form')) {
   if (originSelect) populateSelect(originSelect, ORIGINS, 'YVR');
   if (destinationSelect) populateSelect(destinationSelect, DESTINATIONS, 'PVG');
 }
+for (const id of ['search-airlines', 'bydate-scrape-airlines', 'history-scrape-airlines']) {
+  const el = document.getElementById(id);
+  if (el) renderAirlineCheckboxes(el);
+}
 
 const form = document.getElementById('search-form');
+const searchAirlinesEl = document.getElementById('search-airlines');
 const statusEl = document.getElementById('status');
 const table = document.getElementById('results');
 const tbody = table.querySelector('tbody');
@@ -226,7 +345,7 @@ form.addEventListener('submit', async (e) => {
   tbody.innerHTML = '';
 
   try {
-    const res = await fetch(`/api/fares?origin=${origin}&destination=${destination}&depart_date=${departDate}`);
+    const res = await fetch(`/api/fares?origin=${origin}&destination=${destination}&depart_date=${departDate}${airlinesQueryParam(searchAirlinesEl)}`);
     if (!res.ok) {
       let detail = `API error ${res.status}`;
       try {
@@ -259,13 +378,6 @@ form.addEventListener('submit', async (e) => {
 });
 
 // --- Price Trends ---
-
-const TREND_COLORS = ['#4f8fef', '#e07a3f', '#3fae6b', '#c94f7c', '#9b6fe0', '#d9b23c', '#3fb3ae', '#e0574f'];
-function colorForAirline(code, seenCodes) {
-  let idx = seenCodes.indexOf(code);
-  if (idx === -1) { seenCodes.push(code); idx = seenCodes.length - 1; }
-  return TREND_COLORS[idx % TREND_COLORS.length];
-}
 
 async function fetchJson(url) {
   const res = await fetch(url);
@@ -318,7 +430,6 @@ const MAX_TREND_AIRLINES = 3;
 // onChange(selectedCodes) once immediately and again on every change.
 function renderAirlinePicker(container, groups, onChange) {
   const allCodes = [...groups.keys()];
-  const seenCodes = [];
   let selected = allCodes.slice(0, MAX_TREND_AIRLINES); // ordered: oldest first
 
   function setChecked(code, isChecked) {
@@ -334,7 +445,7 @@ function renderAirlinePicker(container, groups, onChange) {
 
   container.innerHTML = '';
   for (const g of groups.values()) {
-    const color = colorForAirline(g.code, seenCodes);
+    const color = colorForAirline(g.code);
     const label = document.createElement('label');
     label.dataset.code = g.code;
     label.style.cssText = 'display:inline-flex; align-items:center; gap:0.3rem; margin-right:1rem; font-size:0.85rem; font-weight:normal; cursor:pointer;';
@@ -370,8 +481,13 @@ function renderAirlinePicker(container, groups, onChange) {
 }
 
 function renderTrendChart(existingChart, canvas, groups, xKey, xLabel) {
-  canvas.hidden = false;
-  const seenCodes = [];
+  // Un-hide the wrapping .chart-wrap div, not the canvas itself — Chart.js
+  // sets an inline `style="display: block"` on the canvas as part of its own
+  // responsive-sizing logic the first time it renders, and that inline style
+  // permanently overrides the canvas's own `hidden` attribute afterward (an
+  // inline style always beats the `[hidden] { display: none }` UA rule).
+  // Toggling the plain wrapper div instead avoids that fight entirely.
+  canvas.parentElement.hidden = false;
 
   const allXValues = new Set();
   for (const g of groups.values()) {
@@ -380,7 +496,7 @@ function renderTrendChart(existingChart, canvas, groups, xKey, xLabel) {
   const sortedLabels = [...allXValues].sort(); // ISO date/datetime strings sort correctly lexicographically
 
   const datasets = [...groups.values()].map((g) => {
-    const color = colorForAirline(g.code, seenCodes);
+    const color = colorForAirline(g.code);
     return {
       label: `${g.name} (${g.code})`,
       data: g.points.map((p) => ({ x: p[xKey], y: p.price })),
@@ -426,6 +542,56 @@ function renderTrendChart(existingChart, canvas, groups, xKey, xLabel) {
   });
 }
 
+// Builds the flat row list backing both the on-page table and the Excel
+// export, sorted the same way the chart's x-axis is (chronological, then
+// airline name) so all three stay visually consistent.
+function trendRows(groups, xKey) {
+  const rows = [];
+  for (const g of groups.values()) {
+    for (const p of g.points) {
+      // `x` stays the raw sortable value (chronological sort needs it);
+      // `displayX` is the same formatted string shown in the chart's own
+      // x-axis ticks, used for both the table and the export so all three
+      // (chart, table, .xlsx) show the exact same thing for a given point.
+      rows.push({ airline: `${g.name} (${g.code})`, code: g.code, x: p[xKey], displayX: formatXValue(p[xKey], xKey), price: p.price });
+    }
+  }
+  rows.sort((a, b) => (a.x < b.x ? -1 : a.x > b.x ? 1 : a.airline.localeCompare(b.airline)));
+  return rows;
+}
+
+function renderTrendTable(wrapEl, tableEl, groups, xKey, xLabel) {
+  const rows = trendRows(groups, xKey);
+  const tbody = tableEl.querySelector('tbody');
+  tbody.innerHTML = '';
+  for (const r of rows) {
+    const tr = document.createElement('tr');
+    const swatch = `<span class="swatch" style="background:${colorForAirline(r.code)}"></span>`;
+    tr.innerHTML = `
+      <td>${swatch} ${escapeHtml(r.airline)}</td>
+      <td>${escapeHtml(r.displayX)}</td>
+      <td>${r.price.toFixed(2)}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+  wrapEl.hidden = rows.length === 0;
+  return rows;
+}
+
+// Real .xlsx via SheetJS (loaded as `XLSX` from the CDN script tag) — client
+// side only, no server involvement. `xLabel` becomes the second column
+// header so the export matches whichever chart it came from. Uses the same
+// `displayX` formatting as the on-page table, not the raw value, so the
+// export isn't surprisingly different from what was just looked at.
+function exportTrendToExcel(rows, xLabel, filenameBase) {
+  if (!rows.length) return;
+  const sheetRows = rows.map((r) => ({ Airline: r.airline, [xLabel]: r.displayX, 'Price (CAD)': r.price }));
+  const sheet = XLSX.utils.json_to_sheet(sheetRows);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, 'Fares');
+  XLSX.writeFile(workbook, `${filenameBase}.xlsx`);
+}
+
 // Tab switching
 const tabBtnByDate = document.getElementById('tab-btn-bydate');
 const tabBtnHistory = document.getElementById('tab-btn-history');
@@ -449,10 +615,18 @@ function filterGroups(groups, selectedCodes) {
 
 // "By departure date" panel
 let byDateChart = null;
+let byDateRows = [];
 const byDateForm = document.getElementById('bydate-form');
+const byDateScrapeAirlinesEl = document.getElementById('bydate-scrape-airlines');
 const byDateStatus = document.getElementById('bydate-status');
 const byDatePicker = document.getElementById('bydate-airline-picker');
 const byDateCanvas = document.getElementById('bydate-canvas');
+const byDateChartWrap = document.getElementById('bydate-chart-wrap');
+const byDateTableWrap = document.getElementById('bydate-table-wrap');
+const byDateTable = document.getElementById('bydate-table');
+document.getElementById('bydate-export').addEventListener('click', () => {
+  exportTrendToExcel(byDateRows, 'Departure date', `bydate_${byDateForm.origin.value}-${byDateForm.destination.value}`);
+});
 
 byDateForm.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -462,12 +636,13 @@ byDateForm.addEventListener('submit', async (e) => {
   const startDate = data.get('start_date');
   const endDate = data.get('end_date');
 
-  byDateStatus.textContent = 'Checking stored fares and live-scraping any missing dates in the range (each can take up to ~60s and pops a Chrome window)... this can take a few minutes for a wide range.';
+  byDateStatus.textContent = 'Checking stored fares and live-scraping any missing dates in the range for the selected airlines (each can take up to ~60s and pops a Chrome window)... this can take a few minutes for a wide range.';
+  byDateChartWrap.hidden = true;
   byDatePicker.innerHTML = '';
-  byDateCanvas.hidden = true;
+  byDateTableWrap.hidden = true;
 
   try {
-    const payload = await fetchJson(`/api/fares/by-date?origin=${origin}&destination=${destination}&start_date=${startDate}&end_date=${endDate}`);
+    const payload = await fetchJson(`/api/fares/by-date?origin=${origin}&destination=${destination}&start_date=${startDate}&end_date=${endDate}${airlinesQueryParam(byDateScrapeAirlinesEl)}`);
     const rows = payload.fares || [];
     if (rows.length === 0) {
       byDateStatus.textContent = payload.scraped_now
@@ -478,7 +653,9 @@ byDateForm.addEventListener('submit', async (e) => {
     const groups = groupByAirline(rows);
     byDateStatus.textContent = `${groups.size} airline(s) available across ${rows.length} data point(s).` + (payload.scraped_now ? ' (some or all just scraped live)' : '');
     renderAirlinePicker(byDatePicker, groups, (selectedCodes) => {
-      byDateChart = renderTrendChart(byDateChart, byDateCanvas, filterGroups(groups, selectedCodes), 'depart_date', 'Departure date');
+      const filtered = filterGroups(groups, selectedCodes);
+      byDateChart = renderTrendChart(byDateChart, byDateCanvas, filtered, 'depart_date', 'Departure date');
+      byDateRows = renderTrendTable(byDateTableWrap, byDateTable, filtered, 'depart_date', 'Departure date');
     });
   } catch (err) {
     byDateStatus.textContent = `Error: ${err.message}`;
@@ -487,10 +664,18 @@ byDateForm.addEventListener('submit', async (e) => {
 
 // "By scrape date" (price history) panel
 let historyChart = null;
+let historyRows = [];
 const historyForm = document.getElementById('history-form');
+const historyScrapeAirlinesEl = document.getElementById('history-scrape-airlines');
 const historyStatus = document.getElementById('history-status');
 const historyPicker = document.getElementById('history-airline-picker');
 const historyCanvas = document.getElementById('history-canvas');
+const historyChartWrap = document.getElementById('history-chart-wrap');
+const historyTableWrap = document.getElementById('history-table-wrap');
+const historyTable = document.getElementById('history-table');
+document.getElementById('history-export').addEventListener('click', () => {
+  exportTrendToExcel(historyRows, 'Scraped at', `history_${historyForm.origin.value}-${historyForm.destination.value}`);
+});
 
 historyForm.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -499,12 +684,13 @@ historyForm.addEventListener('submit', async (e) => {
   const destination = data.get('destination').trim().toUpperCase();
   const departDate = data.get('depart_date');
 
-  historyStatus.textContent = 'Checking price history... (if there is none yet, this triggers one live scrape, which can take up to ~60s and pops a Chrome window)';
+  historyStatus.textContent = 'Checking price history for the selected airlines... (if there is none yet, this triggers one live scrape, which can take up to ~60s and pops a Chrome window)';
   historyPicker.innerHTML = '';
-  historyCanvas.hidden = true;
+  historyChartWrap.hidden = true;
+  historyTableWrap.hidden = true;
 
   try {
-    const payload = await fetchJson(`/api/fares/history?origin=${origin}&destination=${destination}&depart_date=${departDate}`);
+    const payload = await fetchJson(`/api/fares/history?origin=${origin}&destination=${destination}&depart_date=${departDate}${airlinesQueryParam(historyScrapeAirlinesEl)}`);
     const rows = payload.history || [];
     if (rows.length === 0) {
       historyStatus.textContent = payload.scraped_now
@@ -515,7 +701,9 @@ historyForm.addEventListener('submit', async (e) => {
     const groups = groupByAirline(rows);
     historyStatus.textContent = `${groups.size} airline(s) available across ${rows.length} data point(s).` + (payload.scraped_now ? ' (just scraped live to seed this)' : '') + ' Come back on a later day and search again to add more points to the trend.';
     renderAirlinePicker(historyPicker, groups, (selectedCodes) => {
-      historyChart = renderTrendChart(historyChart, historyCanvas, filterGroups(groups, selectedCodes), 'scraped_at', 'Scraped at');
+      const filtered = filterGroups(groups, selectedCodes);
+      historyChart = renderTrendChart(historyChart, historyCanvas, filtered, 'scraped_at', 'Scraped at');
+      historyRows = renderTrendTable(historyTableWrap, historyTable, filtered, 'scraped_at', 'Scraped at');
     });
   } catch (err) {
     historyStatus.textContent = `Error: ${err.message}`;

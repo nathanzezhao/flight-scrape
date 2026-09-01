@@ -60,8 +60,7 @@ only pattern that worked consistently: fresh page load -> click exactly one
 airline filter -> collect its cards. `search()` below uses this: it collects
 the default view, then does one fresh reload + filter click per priority
 carrier (see PRIORITY_AIRLINE_CODES) that isn't already covered — targeted at
-this project's specific carriers of interest (mainland Chinese carriers plus
-Air Canada/Cathay Pacific/Korean Air/Hong Kong Airlines), not a general fix
+this project's specific list of 13 airlines of interest, not a general fix
 for exhaustive coverage of every airline on every route (doing that for all
 ~12 airlines would mean ~12 page loads per search).
 Also note: `.filter-item[data-code]` isn't airline-only — the same attribute
@@ -76,9 +75,21 @@ NOT yet handled / next steps for whoever picks this up:
   - General pagination (getting every airline, not just the Chinese-carrier
     subset above) — would need the same fresh-reload-per-filter pattern
     applied to every `data-code` in the sidebar, at a real time cost.
-  - Anti-bot hardening for scheduled/unattended runs (this was tested
-    interactively; a cron job hitting this repeatedly may eventually get
-    rate-limited or challenged — watch for it and back off if so). Also
+  - Anti-bot hardening for scheduled/unattended runs — **this actually
+    happened live (2026-08-30)**, not just a theoretical risk: a user
+    selecting "all airlines" across several dates in one session got only
+    2 of 13 airlines back, no error surfaced. Root cause: enough rapid
+    per-airline reloads in one browser session triggered Trip.com's
+    slide-to-verify challenge partway through; every pass after that
+    silently found zero cards and was skipped (a CAPTCHA page looks
+    identical to "no cards found" to the current code — see `_wait_for_cards`).
+    Mitigated (not solved) by `EXTRA_PASS_DELAY_SECONDS` above, which paces
+    the reloads to make triggering it less likely — this project does not
+    attempt to detect or defeat the challenge itself, so a scrape can still
+    silently under-report if it does get challenged. If results look
+    suspiciously sparse across many airlines, this is the likely cause;
+    consider narrowing `priority_codes` for that request, or spacing out
+    separate scrapes more, rather than assuming the code is broken. Also
     observed live: repeatedly clicking the same filter across several script
     runs in the same browser profile left Trip.com's own session state
     "stuck" showing the last-applied filter even on a fresh navigation to the
@@ -121,15 +132,38 @@ SEARCH_URL_TEMPLATE = (
 CARD_SELECTOR = "css:.result-item.J_FlightItem"
 RESULTS_WAIT_SECONDS = 20
 
+# Pause before each per-airline extra-pass reload (see the loop in search()).
+# Confirmed live (2026-08-30): a multi-airline scrape doing many reloads in
+# quick succession in the same browser session can trigger Trip.com's
+# slide-to-verify bot challenge partway through, after which every remaining
+# pass silently finds no cards and is skipped — a user selecting "all
+# airlines" got only 2 of 13 back with no error. This delay isn't a fix for
+# the challenge itself (not something this project tries to defeat), just a
+# way to reduce how often rapid-fire reloads trigger it in the first place.
+EXTRA_PASS_DELAY_SECONDS = 4
+
+# On top of the per-reload delay above, this still wasn't enough on its own —
+# confirmed live: even with EXTRA_PASS_DELAY_SECONDS in place, a full
+# "all 13 airlines" scrape across several dates (each date doing its own
+# up-to-13-reload extra pass) still got challenged, since checking all 13 in
+# one continuous run is still 13 back-to-back reloads regardless of a short
+# per-reload pause. So the extra-pass loop is also split into batches, with a
+# much longer cooldown between batches rather than one continuous run of
+# reloads — spreading a large request out over time instead of just slowing
+# each individual step down a little.
+EXTRA_PASS_BATCH_SIZE = 4
+EXTRA_PASS_BATCH_COOLDOWN_SECONDS = 25
+
 # Priority carriers this project wants guaranteed to be checked, even when
-# Trip.com's default view hides them: mainland Chinese carriers (MU, CZ, CA,
-# MF, 3U, HU) plus other airlines of specific interest (AC Air Canada, CX
-# Cathay Pacific, KE Korean Air, HX Hong Kong Airlines). Not meant to be
-# exhaustive of every airline Trip.com lists, just the ones worth an extra
-# per-search round-trip to check for. Codes per Trip.com's own `data-code`
-# attribute, confirmed for CZ/CA live; others taken from IATA codes and not
-# yet individually confirmed against a route where they appear.
-PRIORITY_AIRLINE_CODES = ["AC", "MU", "CX", "HU", "CA", "CZ", "KE", "MF", "HX", "3U"]
+# Trip.com's default view hides them — the user's explicit list of airlines
+# to always query: AC (Air Canada), MU (China Eastern), CZ (China Southern),
+# CA (Air China), HU (Hainan), MF (Xiamen), 3U (Sichuan), KE (Korean Air),
+# HX (Hong Kong Airlines), CX (Cathay Pacific), BR (EVA Air), CI (China
+# Airlines), JL (Japan Airlines). Not meant to be exhaustive of every airline
+# Trip.com lists, just this specific set. Codes per Trip.com's own
+# `data-code` attribute, confirmed for CZ/CA live; others taken from IATA
+# codes and not yet individually confirmed against a route where they appear.
+PRIORITY_AIRLINE_CODES = ["AC", "MU", "CZ", "CA", "HU", "MF", "3U", "KE", "HX", "CX", "BR", "CI", "JL"]
 
 _ARIA_LABEL_RE = re.compile(
     r"departing from .*? at (?P<dep>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*?"
@@ -176,6 +210,17 @@ def _parse_card(card, request: SearchRequest, currency: str) -> Optional[FareRes
         return None
 
     airline_name = airline_el.text.strip()
+    if "," in airline_name:
+        # A comma means Trip.com is showing a combined marketing/operating-
+        # carrier codeshare listing (e.g. "Air Canada, Cathay Pacific" for an
+        # AC-marketed, CX-operated flight) rather than a single carrier's own
+        # flight. Confirmed live (YVR->PVG, 2026-09-23): this card is
+        # genuinely present in Trip.com's own default view, not a scraping
+        # artifact — but it's not a clean single-carrier fare, which is what
+        # this project's airline-by-airline comparison needs, so it's
+        # dropped here rather than saved under whichever code happens to be
+        # extracted from its logo.
+        return None
     logo_match = _LOGO_CODE_RE.search(logo_el.attr("src") or "")
     airline_code = logo_match.group(1).upper() if logo_match else "UNK"
 
@@ -252,14 +297,63 @@ def _collect_cards(page, request: SearchRequest, currency: str) -> List[FareResu
     return results
 
 
-def search(request: SearchRequest, currency: str = "CAD", headless: bool = False) -> List[FareResult]:
+def _expand_airline_filter_list(page):
+    """Click any visible "Show More" toggle in the filter sidebar.
+
+    Confirmed live (2026-08-30, YVR->PVG 2026-10-15): the Airlines filter
+    section only shows the top ~5 airlines by default (by rank, e.g. United/
+    Air China/Korean Air/Air Canada/EVA Air) — every other airline's
+    `.filter-item[data-code]`, including several of this project's priority
+    carriers (confirmed: China Eastern, Hainan, Hong Kong Airlines, China
+    Airlines all hidden this way), exists in the DOM but has zero width/
+    height until "Show More" is clicked, so `filter_el.click()` on one of
+    them raised DrissionPage's "no location or size" error and the
+    exception handler in search()'s extra-pass loop silently treated that as
+    "this airline has no inventory" — when it may have real flights sitting
+    one click away. This was very likely the root cause of an earlier
+    finding in this project's history that China Eastern "has zero
+    inventory" on Trip.com for a given route/date — re-verify any such
+    earlier claim now that this is fixed, since it may have just been this
+    silent click failure, not real unavailability.
+
+    Best-effort: harmless if there's no "Show More" to click, or if the
+    click itself fails for some other reason.
+    """
+    try:
+        page.run_js(
+            """
+            Array.from(document.querySelectorAll('span')).forEach(s => {
+                if (s.textContent.trim() === 'Show More') {
+                    const r = s.getBoundingClientRect();
+                    if (r.width > 0 && r.height > 0) s.click();
+                }
+            });
+            """
+        )
+        time.sleep(1)
+    except Exception:
+        pass
+
+
+def search(
+    request: SearchRequest,
+    currency: str = "CAD",
+    headless: bool = False,
+    priority_codes: Optional[List[str]] = None,
+) -> List[FareResult]:
     """Search Trip.com for a route/date and return one FareResult per listed flight.
 
-    Includes an extra pass per priority carrier (see PRIORITY_AIRLINE_CODES)
-    not already present in the default view, since Trip.com's default view
-    hides most of its real inventory behind per-airline sidebar filters (see
-    module docstring's "DEFAULT RESULTS ARE INCOMPLETE" section).
+    Includes an extra pass per priority carrier not already present in the
+    default view, since Trip.com's default view hides most of its real
+    inventory behind per-airline sidebar filters (see module docstring's
+    "DEFAULT RESULTS ARE INCOMPLETE" section). Checks PRIORITY_AIRLINE_CODES
+    by default; pass `priority_codes` to check a smaller/different set
+    instead — e.g. the web layer passes through whatever subset the user
+    actually selected, since each extra carrier costs a full page reload
+    plus EXTRA_PASS_DELAY_SECONDS of pacing (~9-12s+ per carrier) and
+    checking all 13 by default is the main cost of a scrape.
     """
+    codes_to_check = priority_codes if priority_codes is not None else PRIORITY_AIRLINE_CODES
     if request.return_date is not None:
         raise NotImplementedError("Round-trip search not yet implemented (Trip.com needs triptype=rt + return date).")
 
@@ -289,19 +383,42 @@ def search(request: SearchRequest, currency: str = "CAD", headless: bool = False
             results = _collect_cards(page, request, currency)
         seen_codes = {r.airline_code for r in results}
 
-        for code in PRIORITY_AIRLINE_CODES:
+        reload_count = 0
+        for code in codes_to_check:
             if code in seen_codes:
                 continue
+            # Pace reloads to reduce the odds of tripping Trip.com's bot
+            # challenge: a short pause before every reload, plus a much
+            # longer cooldown every EXTRA_PASS_BATCH_SIZE reloads so a large
+            # request (many airlines) is spread out over time rather than
+            # run as one continuous burst — confirmed live that the short
+            # pause alone wasn't enough to stop a full 13-airline scrape
+            # from getting challenged partway through.
+            if reload_count > 0 and reload_count % EXTRA_PASS_BATCH_SIZE == 0:
+                time.sleep(EXTRA_PASS_BATCH_COOLDOWN_SECONDS)
+            else:
+                time.sleep(EXTRA_PASS_DELAY_SECONDS)
+            reload_count += 1
             # Fresh reload before each filter click — clicking a second
             # filter on the same load was unreliable (see module docstring).
             page.get(url)
             if not _wait_for_cards(page):
                 continue
+            # Expand any collapsed "Show More" filter list first — most
+            # priority carriers live past the default-shown top ~5 airlines
+            # (see _expand_airline_filter_list's docstring).
+            _expand_airline_filter_list(page)
             filter_el = page.ele(f'css:.filter-item[data-code="{code}"]', timeout=2)
             if not filter_el:
                 continue  # this airline has no inventory for this search at all
             try:
-                filter_el.click()
+                # JS-dispatched click, not DrissionPage's native coordinate
+                # click — confirmed live the native click can fail with "no
+                # location or size" even on an element that becomes properly
+                # visible right after _expand_airline_filter_list runs (a
+                # possible layout/paint-timing race), while a JS click on the
+                # same element works reliably regardless.
+                filter_el.run_js("this.click()")
                 time.sleep(2.5)
             except Exception:
                 continue  # best-effort: one flaky filter click shouldn't fail the whole search

@@ -48,6 +48,24 @@ def fetch_known_airlines() -> list:
         return [{"code": r[0], "name": r[1]} for r in rows]
 
 
+def fetch_scraped_airline_codes(origin: str, destination: str, depart_date: str) -> set:
+    """Which airline codes have ever been scraped for this exact route/date —
+    used to decide whether a *specific* requested airline needs a fresh
+    scrape, as opposed to "does any data at all exist for this route/date"
+    (the latter incorrectly skips scraping a genuinely new airline once any
+    other airline has been cached — see web/api/index.py's needs_scrape)."""
+    engine = _get_engine()
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT DISTINCT airline_code FROM fares "
+                "WHERE origin = :origin AND destination = :destination AND depart_date = :depart_date"
+            ),
+            {"origin": origin.upper(), "destination": destination.upper(), "depart_date": depart_date},
+        )
+        return {r[0] for r in rows}
+
+
 def fetch_fares(origin: str, destination: str, depart_date: str, airlines=None) -> list:
     """Latest fare per airline for a given route/date, cheapest first."""
     query = """
@@ -106,7 +124,7 @@ def fetch_fares(origin: str, destination: str, depart_date: str, airlines=None) 
     return result
 
 
-def fetch_fares_by_date(origin: str, destination: str, start_date: str, end_date: str) -> list:
+def fetch_fares_by_date(origin: str, destination: str, start_date: str, end_date: str, airlines=None) -> list:
     """Latest fare per (airline, depart_date) across a date range — one point
     per airline per day, for a "price by departure date" trend chart. Only
     returns dates that have actually been scraped; does not fill gaps."""
@@ -115,7 +133,6 @@ def fetch_fares_by_date(origin: str, destination: str, start_date: str, end_date
         FROM fares
         WHERE origin = :origin AND destination = :destination
           AND depart_date BETWEEN :start_date AND :end_date
-        ORDER BY scraped_at DESC, id DESC
     """
     params = {
         "origin": origin.upper(),
@@ -123,10 +140,18 @@ def fetch_fares_by_date(origin: str, destination: str, start_date: str, end_date
         "start_date": start_date,
         "end_date": end_date,
     }
+    if airlines:
+        query += " AND airline_code IN :airlines"
+        params["airlines"] = tuple(airlines)
+    query += " ORDER BY scraped_at DESC, id DESC"
 
     engine = _get_engine()
     with engine.connect() as conn:
-        rows = [dict(r._mapping) for r in conn.execute(text(query), params)]
+        stmt = text(query)
+        if airlines:
+            # See fetch_fares() for why this needs an expanding bindparam.
+            stmt = stmt.bindparams(bindparam("airlines", expanding=True))
+        rows = [dict(r._mapping) for r in conn.execute(stmt, params)]
 
     # Keep only the most recently scraped row per (airline, depart_date) pair
     # — same tiebreak logic as fetch_fares, just grouped one level finer.
@@ -147,7 +172,7 @@ def fetch_fares_by_date(origin: str, destination: str, start_date: str, end_date
     return result
 
 
-def fetch_price_history(origin: str, destination: str, depart_date: str) -> list:
+def fetch_price_history(origin: str, destination: str, depart_date: str, airlines=None) -> list:
     """Every historical scrape for one exact route+date, per airline, ordered
     by scrape time — for a "price by scrape date" tracking chart. Deliberately
     NOT deduped (unlike fetch_fares/fetch_fares_by_date) since the whole point
@@ -156,13 +181,19 @@ def fetch_price_history(origin: str, destination: str, depart_date: str) -> list
         SELECT airline_code, airline_name, price, currency, scraped_at
         FROM fares
         WHERE origin = :origin AND destination = :destination AND depart_date = :depart_date
-        ORDER BY airline_code, scraped_at
     """
     params = {"origin": origin.upper(), "destination": destination.upper(), "depart_date": depart_date}
+    if airlines:
+        query += " AND airline_code IN :airlines"
+        params["airlines"] = tuple(airlines)
+    query += " ORDER BY airline_code, scraped_at"
 
     engine = _get_engine()
     with engine.connect() as conn:
-        rows = [dict(r._mapping) for r in conn.execute(text(query), params)]
+        stmt = text(query)
+        if airlines:
+            stmt = stmt.bindparams(bindparam("airlines", expanding=True))
+        rows = [dict(r._mapping) for r in conn.execute(stmt, params)]
 
     for r in rows:
         r["price"] = float(r["price"])

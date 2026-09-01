@@ -142,6 +142,36 @@ Tests the deployed site as a real user would:
   Also verify the empty-state message on each tab, and that `end_date`
   before `start_date` shows the API's actual error text rather than a
   generic "API error 422".
+- **New: pre-scrape airline selector, distinct from the ≤3 compare picker.**
+  There are now *two* airline UIs per trend form — one before submit
+  (`#*-scrape-airlines`, all 13 checked by default, controls what actually
+  gets requested/scraped) and the existing post-fetch compare picker (caps
+  at 3, controls what's charted from whatever came back). Don't conflate
+  them in testing. Verified live: narrowing to 1 airline cut a real scrape
+  from ~57-59s to ~6s; requesting a different airline subset for an
+  already-scraped date/range doesn't trigger a wasteful rescrape (returns
+  instantly, `scraped_now: false`, possibly empty if that airline was never
+  actually scraped for that date — this is correct/expected, not a bug).
+- **New: color consistency fix.** `colorForAirline(code)` used to take a
+  `seenCodes` array built fresh per call — the picker (all airlines) and the
+  chart (≤3 selected) built different arrays, so the same airline could get
+  a different color in each, and selected airlines always landed at the
+  same 2-3 palette slots in the chart regardless of which ones were picked
+  (confirmed live: chart lines were always blue/orange/green no matter the
+  selection). Fixed: `colorForAirline` is now a pure function keyed off each
+  airline's fixed index in `TRACKED_AIRLINES` (14-color palette, one per
+  tracked airline plus one spare). Verify by comparing a picker swatch's
+  computed color to the matching chart dataset's `borderColor` — should be
+  byte-identical, not just "look similar" — across different selections,
+  not just the default 3.
+- **New: data table + Excel export below each chart.** Verified live: table
+  rows match the chart's plotted points; "Export to Excel" produces a real
+  `.xlsx` (checked ZIP magic bytes `PK` + correct row count/values, not just
+  "no exception thrown"). The exported timestamp column uses the same
+  formatted display value as the table (not the raw ISO string) — verify
+  this stays true if the row-building logic (`trendRows()`) changes, since
+  the raw vs. formatted distinction is an easy thing to accidentally
+  reintroduce a mismatch on.
 - Post-deploy smoke test after every deploy: confirm the live site can reach
   the real Postgres DB and isn't silently serving stale/cached data. (The
   target is no longer necessarily a Vercel URL — see README's Architecture
